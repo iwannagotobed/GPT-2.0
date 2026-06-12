@@ -1,0 +1,22 @@
+# 데이터 산출물 (커밋 금지)
+data/input.txt
+data/*.bin
+data/meta.pkl
+
+# 체크포인트
+checkpoints/
+
+# 학습 로그
+*.csv
+loss_log*
+
+# 스펙 문서 (미추적 유지)
+mini-gpt2-project-plan.md
+
+# 파이썬
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.ipynb_checkpoints/
