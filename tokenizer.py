@@ -24,6 +24,10 @@ class CharTokenizer:
 
     def encode(self, text: str) -> list[int]:
         """문자열 → 정수 ID 리스트."""
+        unknown = sorted(set(text) - self.stoi.keys())
+        if unknown:
+            display = ", ".join(repr(ch) for ch in unknown[:10])
+            raise ValueError(f"학습 vocab에 없는 문자입니다: {display}")
         return [self.stoi[ch] for ch in text]
 
     def decode(self, ids: list[int]) -> str:

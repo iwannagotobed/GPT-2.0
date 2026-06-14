@@ -1,145 +1,122 @@
-# 미니 GPT-2: Transformer Decoder 직접 구현 및 학습 보고서
+# 미니 GPT-2: 한국어 공개 고전소설 학습 보고서
 
-> GPT-2의 핵심 구조인 **Transformer Decoder**를 PyTorch로 직접 구현하고,
-> Tiny Shakespeare 데이터로 학습시켜 문장 생성 능력을 검증한 과제 보고서.
-
----
+> Transformer Decoder를 PyTorch로 직접 구현하고, Tiny Shakespeare 대신
+> 한국어 위키문헌의 공개 고전소설로 학습시킨 결과를 정리한다.
 
 ## 1. 개요
 
 | 항목 | 내용 |
-|------|------|
-| 과제 목표 | GPT-2 수준 언어모델을 외부 라이브러리 없이 직접 구현·학습 |
-| 만든 것 | nanoGPT 규모 미니 GPT-2 (**약 3.23M 파라미터**, GPT-2 small의 약 1/38) |
-| 데이터 | Tiny Shakespeare (약 1.1M 문자), **문자 단위(char-level)** 토큰화, vocab 65 |
-| 학습 환경 | Apple Silicon GPU (**MPS**), 5,000 iteration |
-| 핵심 결과 | val loss 4.23 → **1.53**, Perplexity 68.9 → **4.6** |
+|---|---|
+| 과제 목표 | GPT-2 핵심 구조를 직접 구현하고 새로운 데이터셋으로 학습 |
+| 모델 | 4-layer char-level 미니 GPT-2, **4,889,324 파라미터** |
+| 데이터 | 한국어 공개 고전소설 62편, 정제 본문 1,019,129자 |
+| 작가 | 김동인, 현진건, 나도향, 최서해, 이상 |
+| 토큰화 | 문자 단위, vocab **3,308** |
+| 학습 환경 | CPU, 5,000 iteration |
+| 핵심 결과 | val loss 8.2070 → **3.0612**, perplexity 3666.66 → **21.35** |
 
-"앞 토큰들을 보고 다음 토큰을 맞춘다"는 단일 목표만으로 학습했으며, 학습 후 모델이
-셰익스피어 희곡의 형식(인물명·대사 구조)을 스스로 재현하는 것을 확인했다.
+기존 Tiny Shakespeare 전용 다운로드를 제거하고, 저작권 보호기간이 끝난 한국 작가의
+소설을 한국어 위키문헌 API에서 수집하는 파이프라인을 구현했다. 모델 구조와 문자 단위
+토큰화는 유지해 데이터셋 변경에 집중했다.
 
----
+## 2. 데이터셋과 재현성
 
-## 2. 모델 구조
+`data/prepare.py`는 각 작가의 `저자:` 문서를 참조하는 페이지 중 위키문헌의 소설 분류가
+붙은 본문만 선택한다. HTML과 라이선스 안내를 제거하고 Unicode NFC 및 공백을 정규화한다.
+
+| 항목 | 결과 |
+|---|---:|
+| 작품 수 | 62편 |
+| 정제 본문 | 1,019,129자 |
+| 모델 입력 전체 | 1,020,855자 |
+| train | 53편, 869,304 토큰 |
+| validation | 9편, 151,551 토큰 |
+| vocab | 3,308자 |
+
+작품 단위로 train/validation을 분리해 같은 작품의 인접 문장이 양쪽에 섞이지 않도록 했다.
+각 문서의 제목, URL, revision ID, 문자 수, 작가, split, 라이선스 정보는
+`data/sources.json`에 기록한다. 기본 실행은 이 revision 목록을 재사용하고,
+`--refresh`를 지정할 때만 작품을 다시 검색한다.
+
+## 3. 모델과 학습 설정
 
 ```
-입력 토큰 → 토큰 임베딩 + 위치 임베딩
-   → [Transformer Block × 4] → LayerNorm → LM Head → 다음 토큰 확률
+입력 문자 → 토큰 임베딩 + 위치 임베딩
+  → [Causal Self-Attention + FFN] × 4
+  → LayerNorm → LM Head → 다음 문자 확률
 ```
 
-| 부품 | 역할 | 구현 위치 |
-|------|------|-----------|
-| 토큰/위치 임베딩 | 정수 ID → 벡터, 위치 정보 추가 | `model.py` `GPT.__init__` |
-| Causal Self-Attention | 단어 간 참고(미래는 `tril` 마스크로 차단) | `CausalSelfAttention` |
-| Multi-Head | 4개 헤드로 다양한 관점 동시 attention | 同 |
-| Feed Forward | Linear → GELU → Linear (토큰별 비선형 변환) | `FeedForward` |
-| LayerNorm + Residual | 학습 안정화 + 깊은 네트워크 학습 | `Block` (pre-norm) |
-| LM Head | 최종 벡터 → 어휘(65) 확률 | `GPT.forward` |
+| 항목 | 값 | 항목 | 값 |
+|---|---:|---|---:|
+| n_layer | 4 | batch_size | 32 |
+| n_embd | 256 | block_size | 128 |
+| n_head | 4 | learning rate | 3e-4 |
+| max_iters | 5,000 | optimizer | AdamW |
 
-GPT-2의 결정적 특징인 **Causal Mask**(미래 토큰을 못 보게 막는 하삼각 마스크)를
-적용해, BERT 같은 양방향 모델이 아닌 **자기회귀(autoregressive)** 언어모델로 동작한다.
-
----
-
-## 3. 학습 설정
-
-| 하이퍼파라미터 | 값 | | 하이퍼파라미터 | 값 |
-|---|---|---|---|---|
-| n_layer | 4 | | batch_size | 32 |
-| n_embd | 256 | | max_iters | 5,000 |
-| n_head | 4 | | learning rate | 3e-4 (AdamW) |
-| block_size | 128 | | device | MPS |
-
-손실 함수는 cross-entropy, 옵티마이저는 AdamW를 사용했다. 500 step마다 train/val
-loss를 함께 측정해 과적합을 모니터링하고, val loss 최저 시점에 체크포인트를 저장했다.
-설정값은 모두 `config.py`에 정의되어 있다.
-
----
+500 iteration마다 train/validation loss를 평가하고, validation loss가 가장 낮은 모델만
+`checkpoints/model.pt`에 저장했다.
 
 ## 4. 학습 결과
 
-학습 로그 (실제 실행 화면):
+전체 5,000 iteration 학습 실행 화면:
 
-![학습 로그](./train.png)
-
-`loss_log.csv` 기준 주요 구간:
+![한국어 고전소설 학습 실행 결과](./train.png)
 
 | iter | train loss | val loss | val perplexity |
-|------|-----------|----------|----------------|
-| 0 | 4.229 | 4.233 | 68.9 |
-| 500 | 1.941 | 2.018 | 7.5 |
-| 1,500 | 1.456 | 1.646 | 5.2 |
-| 3,500 | 1.235 | **1.532** | **4.63** |
-| 5,000 | 1.138 | 1.565 | 4.78 |
+|---:|---:|---:|---:|
+| 0 | 8.2068 | 8.2070 | 3666.66 |
+| 500 | 3.1698 | 3.4141 | 30.39 |
+| 1,000 | 2.8130 | 3.1731 | 23.88 |
+| 1,500 | 2.6194 | 3.0878 | 21.93 |
+| **2,000** | **2.4528** | **3.0612** | **21.35** |
+| 3,500 | 1.9689 | 3.2386 | 25.50 |
+| 5,000 | 1.4892 | 3.6230 | 37.45 |
 
-학습 곡선 (전체 `loss_log.csv` 기준, 좌: loss / 우: perplexity):
+![한국어 고전소설 학습 곡선](./loss_curve.png)
 
-![학습 곡선](./loss_curve.png)
+초기 대비 best validation perplexity가 약 172분의 1로 감소했다. 2,000 iteration 이후에는
+train loss만 계속 감소하고 validation loss는 상승하므로 과적합이 시작됐다고 판단할 수
+있다. 체크포인트는 자동으로 2,000 iteration의 best 모델을 유지한다.
 
-- **Perplexity가 68.9 → 4.6으로 약 15배 감소**했다. 모델이 다음 문자를 평균적으로
-  약 5개 후보 수준으로 좁혀 예측하게 되었음을 의미한다.
-- val loss는 **iter ≈ 3,500에서 최저(1.5323)** 를 찍은 뒤 소폭 반등했다. train loss는
-  계속 하락하므로, 이 구간부터 **과적합**이 시작된 것으로 해석된다. best 체크포인트는
-  최저 시점 기준으로 저장된다.
+Tiny Shakespeare의 vocab은 65자였지만 이번 한국어 코퍼스는 한글과 한자를 포함해
+3,308자다. 따라서 두 데이터셋의 perplexity 절대값을 직접 비교하는 것은 적절하지 않으며,
+같은 코퍼스에서 학습 전후의 감소 추세를 평가했다.
 
----
+## 5. 생성 결과
 
-## 5. 생성 예시 (Before / After)
+best 체크포인트에 `"그는"` 프롬프트를 주고 `temperature=0.8`, `top_k=50`으로 생성했다.
 
-동일 프롬프트 `"ROMEO:"` 로 학습 전·후 생성 결과를 비교했다 (실제 `generate.py` 출력).
+```text
+그는 한 마위 위에 또 물어보시는 것을 기회를 바르는 것이다.
 
-**Before — 학습 전 (랜덤 초기화):**
+그러나 이 기쁘다고 별명을 한 장이 남아야 할 수 없는 이것이 아니라.
+자기가 좀 부쩍 뜨이지 않고 이 나날이 지어 오셨읍니까.
 
-```
-ROMEO:bLcPSKzAbZzCHKfVz;SnvYTSqkhJ.Vw&zubTCCYiTgu;TPcipxNnmn$ek-OReg'rkU
-q;.SgQHLO3pQhy?sACO; dj'cqKfcORTuv,,Y:zbcV$XXNLOV r?RwV$Iq ...
-```
+"이 그래요?"
 
-**After — 학습 후 (5,000 iter):**
-
-```
-ROMEO:
-O you are envy away.
-
-LUCIO:
-Horten the fine and with so blinding warm.
-
-LEONTES:
-What no more? Call upons him, that war? nou it;
-And therefore and comes to your gage:
-Then you are pime you ourself that hands
+"그래 왜 그럴 줄 아시오."
 ```
 
-실제 실행 화면 (`--prompt "ROMEO:" --max_new_tokens 500 --temperature 0.8`):
+실제 생성 실행 화면:
 
-![생성 결과](./generate.png)
+![한국어 고전소설 생성 결과](./generate.png)
 
-위 출력에서 보듯 **ROMEO · KING HENRY VI · DUKE VINCENTIO · HERMIONE** 등 여러 인물이
-번갈아 등장하며, 각 인물의 대사가 콜론 뒤에 줄바꿈과 함께 이어진다.
+모델은 한국어 음절, 문단, 인용 부호, 대화 형식, 고전적인 어미를 학습했다. 다만 작은
+char-level 모델이라 장기 문맥과 문장 의미의 일관성은 부족하다.
 
-학습 전에는 의미 없는 문자 나열이지만, 학습 후에는 **인물명(ROMEO/LUCIO/LEONTES) →
-콜론 → 대사 → 빈 줄**이라는 희곡 형식과 영어 단어·구문 구조를 재현한다. 개별 단어에
-오타가 있는 것은 문자 단위·소규모 모델의 한계이며, **형식과 패턴 자체는 명확히 학습**됐다.
+## 6. 결론과 개선 방향
 
----
-
-## 6. 결론 및 배운 점
-
-- "다음 토큰 예측"이라는 단순 목표만으로, 명시적 문법 규칙 없이도 문장 형식·구조가
-  **emergent하게** 나타남을 직접 확인했다 — GPT 계열 모델의 핵심 직관.
-- Causal mask, pre-norm + residual, multi-head attention 등 GPT-2의 핵심 구성요소를
-  외부 모델 라이브러리 없이 PyTorch로 구현하며 내부 동작을 이해했다.
-- val loss 반등으로 **과적합 시점을 정량적으로 포착**했고, 체크포인트/조기 종료의
-  필요성을 실험적으로 체감했다. 향후 dropout·데이터 증강·모델 축소로 개선 가능하다.
-
----
+- Tiny Shakespeare 의존성을 제거하고 출처와 revision이 기록된 한국어 코퍼스를 구축했다.
+- 문자 단위 GPT가 한국어 표면 형식과 문체를 학습하는 것을 loss와 생성 결과로 확인했다.
+- 작품 단위 validation을 적용해 단순한 인접 문장 누출을 줄였다.
+- 향후에는 early stopping, dropout, 더 큰 코퍼스, BPE 토크나이저로 과적합과 장기 문맥을
+  개선할 수 있다.
 
 ## 7. 실행 방법
 
 ```bash
-uv run python data/prepare.py     # 데이터 준비 (train.bin / val.bin)
-uv run python train.py            # 학습 → checkpoints/model.pt
-uv run python generate.py --prompt "ROMEO:" --temperature 0.8
+python data/prepare.py
+python train.py
+python generate.py --prompt "그는" --temperature 0.8 --top_k 50
+python docs/plot_loss.py
 ```
-
-코드 구조와 모듈 설명은 [../README.md](../README.md) 참조.
