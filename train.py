@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 import pickle
 from pathlib import Path
@@ -19,10 +20,24 @@ LOG_PATH = ROOT / "loss_log.csv"
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="미니 GPT-2 학습")
+    parser.add_argument("--max-iters", type=int, default=None)
+    parser.add_argument("--eval-interval", type=int, default=None)
+    parser.add_argument("--eval-iters", type=int, default=None)
+    parser.add_argument("--checkpoint", type=Path, default=CKPT_PATH)
+    parser.add_argument("--log", type=Path, default=LOG_PATH)
+    args = parser.parse_args()
+
     device = get_device()
     print(f"device: {device}")
 
     tcfg = TrainConfig()
+    if args.max_iters is not None:
+        tcfg.max_iters = args.max_iters
+    if args.eval_interval is not None:
+        tcfg.eval_interval = args.eval_interval
+    if args.eval_iters is not None:
+        tcfg.eval_iters = args.eval_iters
     torch.manual_seed(tcfg.seed)
 
     # vocab 로드 → 모델 config 주입
@@ -58,7 +73,7 @@ def main() -> None:
             log_rows.append({"iter": it, "train": losses["train"], "val": losses["val"], "val_ppl": ppl})
             if losses["val"] < best_val:
                 best_val = losses["val"]
-                save_checkpoint(CKPT_PATH, model, mcfg, meta)
+                save_checkpoint(args.checkpoint, model, mcfg, meta)
 
         if it == tcfg.max_iters:
             break
@@ -71,13 +86,14 @@ def main() -> None:
         optimizer.step()
 
     # loss 곡선 재현용 CSV 저장
-    with LOG_PATH.open("w", newline="") as f:
+    args.log.parent.mkdir(parents=True, exist_ok=True)
+    with args.log.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["iter", "train", "val", "val_ppl"])
         writer.writeheader()
         writer.writerows(log_rows)
 
-    print(f"학습 완료. best val loss {best_val:.4f} → {CKPT_PATH}")
-    print(f"loss 로그 저장: {LOG_PATH}")
+    print(f"학습 완료. best val loss {best_val:.4f} → {args.checkpoint}")
+    print(f"loss 로그 저장: {args.log}")
 
 
 if __name__ == "__main__":

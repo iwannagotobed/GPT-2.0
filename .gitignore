@@ -10,9 +10,6 @@ checkpoints/
 *.csv
 loss_log*
 
-# 스펙 문서 (미추적 유지)
-mini-gpt2-project-plan.md
-
 # 파이썬
 __pycache__/
 *.pyc
